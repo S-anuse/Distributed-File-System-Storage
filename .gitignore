@@ -1,0 +1,15 @@
+# Compiled binaries
+*.exe
+client
+server
+master
+downloader
+
+# Local simulation chunk files
+server_*
+
+# Reconstructed test files
+*_output.txt
+
+# Local file indexing
+file_index.txt

@@ -1,179 +1,179 @@
+#include "socket_helper.h"
 #include <iostream>
 #include <fstream>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <vector>
 #include <ctime>
+#include <cstring>
+#include <stdint.h>
 
 using namespace std;
-#define CHUNK_SIZE 512 
 
+#define CHUNK_SIZE 512
 
-int createConnection(int port) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+struct UploadPacket {
+    char fileID[256];
+    int chunkNumber;
+    int port;
+};
+
+// Function to establish a socket connection to a specific port
+SOCKET connectToPort(int port) {
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (!IS_VALIDSOCKET(sock)) return INVALID_SOCKET;
+
     struct sockaddr_in serv_addr;
-
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr);
+    serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    // Set connection timeout (optional, but good for fault tolerance)
+    #ifdef _WIN32
+        DWORD timeout = 2000; // 2 seconds
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+    #else
+        struct timeval timeout;
+        timeout.tv_sec = 2;
+        timeout.tv_usec = 0;
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    #endif
 
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        cout << "Connection failed to port " << port << endl;
-        return -1;
+        CLOSE_SOCKET(sock);
+        return INVALID_SOCKET;
     }
-
-    cout << "Connected to port " << port << endl;
     return sock;
 }
 
-int main() {
-    vector<int> ports = {8080, 8081, 8082};
-    vector<int> sockets;
-
-    // Connect to all servers
-    vector<int> activePorts;
-
-    for (int port : ports) {
-    	int sock = createConnection(port);
-
-	if (sock != -1) {
-        	sockets.push_back(sock);
-	        activePorts.push_back(port);
-    	} 
-	else {
-        	cout << "Skipping port " << port << endl;
-    	}
-     }
-     
-    // Connect to master server
-    int masterSock = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in master_addr;
-
-    master_addr.sin_family = AF_INET;
-    master_addr.sin_port = htons(9000);
-    inet_pton(AF_INET, "127.0.0.1", &master_addr.sin_addr);
-
-    if (connect(masterSock, (struct sockaddr *)&master_addr, sizeof(master_addr)) < 0) {
-    	cout << "Connection to Master failed\n";
-    	return -1;
+// Function to upload a chunk to a storage server
+bool uploadChunk(int port, const string& fileID, int chunkNumber, const char* data, int dataSize) {
+    SOCKET sock = connectToPort(port);
+    if (!IS_VALIDSOCKET(sock)) {
+        cout << "[Client] Connection failed to storage server on port " << port << endl;
+        return false;
     }
 
-    cout << "Connected to Master Server\n";
-    
+    // 1. Send Command
+    char cmd = 'U';
+    send(sock, &cmd, 1, 0);
+
+    // 2. Send File ID (padded to 256 bytes)
+    char fileIDBuffer[256];
+    memset(fileIDBuffer, 0, sizeof(fileIDBuffer));
+    strncpy(fileIDBuffer, fileID.c_str(), sizeof(fileIDBuffer) - 1);
+    send(sock, fileIDBuffer, sizeof(fileIDBuffer), 0);
+
+    // 3. Send Chunk Number
+    send(sock, (char*)&chunkNumber, sizeof(chunkNumber), 0);
+
+    // 4. Send Data Size
+    send(sock, (char*)&dataSize, sizeof(dataSize), 0);
+
+    // 5. Send Data Payload
+    send(sock, data, dataSize, 0);
+
+    // 6. Receive status response
+    char status = 0;
+    int r = recv(sock, &status, 1, 0);
+    CLOSE_SOCKET(sock);
+
+    return (r > 0 && status == 'S');
+}
+
+// Send registration metadata packet to the Master Server
+void registerMetadata(SOCKET masterSock, const string& fileID, int chunkNumber, int port) {
+    UploadPacket packet;
+    memset(packet.fileID, 0, sizeof(packet.fileID));
+    strncpy(packet.fileID, fileID.c_str(), sizeof(packet.fileID) - 1);
+    packet.chunkNumber = chunkNumber;
+    packet.port = port;
+
+    send(masterSock, (char*)&packet, sizeof(UploadPacket), 0);
+}
+
+int main() {
+    if (!init_network()) {
+        cerr << "Failed to initialize network\n";
+        return 1;
+    }
+
+    vector<int> ports = {8080, 8081, 8082};
+
+    // Connect to Master Server
+    SOCKET masterSock = connectToPort(9000);
+    if (!IS_VALIDSOCKET(masterSock)) {
+        cerr << "Connection to Master Server (port 9000) failed. Please start the Master Server first.\n";
+        cleanup_network();
+        return 1;
+    }
+    cout << "Connected to Master Server.\n";
+
+    // Send 'U' command to Master Server to initiate metadata upload session
+    char masterCmd = 'U';
+    send(masterSock, &masterCmd, 1, 0);
+
     ifstream file("test.txt", ios::binary);
+    if (!file) {
+        cerr << "Error opening 'test.txt'. Make sure the file exists in the current directory.\n";
+        CLOSE_SOCKET(masterSock);
+        cleanup_network();
+        return 1;
+    }
+
     string filename = "test.txt";
-
-    // generate timestamp
     time_t now = time(0);
-
-    // unique fileID
     string fileID = filename + "_" + to_string(now);
+
+    // Save filename to fileID mapping in file_index.txt
     ofstream index("file_index.txt", ios::app);
     index << filename << " " << fileID << endl;
     index.close();
 
-    cout << "Generated FileID: " << fileID << endl;
-    char buffer[CHUNK_SIZE];
+    cout << "Uploading File: " << filename << " as Unique ID: " << fileID << endl;
 
+    char buffer[CHUNK_SIZE];
     int chunkNumber = 0;
     int serverIndex = 0;
 
-    while (file.read(buffer, CHUNK_SIZE)) {
-        int primary = serverIndex;
-	int secondary = (serverIndex + 1) % sockets.size();
+    while (!file.eof()) {
+        file.read(buffer, CHUNK_SIZE);
+        int dataSize = file.gcount();
+        if (dataSize <= 0) break;
 
-	// Send to primary
-	if (sockets[primary] != -1) {
-    		int dataSize = CHUNK_SIZE;
+        int primaryPort = ports[serverIndex];
+        int secondaryPort = ports[(serverIndex + 1) % ports.size()];
 
-		// send fileID
-		send(sockets[primary], fileID.c_str(), fileID.size() + 1, 0);
+        cout << "Processing Chunk " << chunkNumber << " (Size: " << dataSize << " bytes)" << endl;
 
-		// send chunk number
-		send(sockets[primary], &chunkNumber, sizeof(chunkNumber), 0);
+        // Try Uploading to Primary Server
+        bool primarySuccess = uploadChunk(primaryPort, fileID, chunkNumber, buffer, dataSize);
+        if (primarySuccess) {
+            cout << "  Chunk " << chunkNumber << " uploaded successfully to Primary: Port " << primaryPort << endl;
+            registerMetadata(masterSock, fileID, chunkNumber, primaryPort);
+        } else {
+            cout << "  [Warning] Failed to upload Chunk " << chunkNumber << " to Primary: Port " << primaryPort << endl;
+        }
 
-		// send data size
-		send(sockets[primary], &dataSize, sizeof(dataSize), 0);
+        // Try Uploading to Secondary Server (Replica)
+        bool secondarySuccess = uploadChunk(secondaryPort, fileID, chunkNumber, buffer, dataSize);
+        if (secondarySuccess) {
+            cout << "  Chunk " << chunkNumber << " uploaded successfully to Replica: Port " << secondaryPort << endl;
+            registerMetadata(masterSock, fileID, chunkNumber, secondaryPort);
+        } else {
+            cout << "  [Warning] Failed to upload Chunk " << chunkNumber << " to Replica: Port " << secondaryPort << endl;
+        }
 
-		// send actual data
-		send(sockets[primary], buffer, dataSize, 0);
-	}
-
-	// Send to secondary (replica)
-	if (sockets[secondary] != -1) {
-    		int dataSize = CHUNK_SIZE;
-
-		// send fileID
-		send(sockets[secondary], fileID.c_str(), fileID.size() + 1, 0); 
-
-		// send chunk number
-		send(sockets[secondary], &chunkNumber, sizeof(chunkNumber), 0); 
-
-		// send data size
-		send(sockets[secondary], &dataSize, sizeof(dataSize), 0); 
-
-		// send actual data
-		send(sockets[secondary], buffer, dataSize, 0);
-	}
-
-	cout << "Chunk " << chunkNumber << " stored at "<< activePorts[primary] << " and " << activePorts[secondary] << endl;
- 	
-	// Send metadata to master
-	// ✅ Send BOTH to master
-	send(masterSock, fileID.c_str(), fileID.size() + 1, 0);
-	send(masterSock, &chunkNumber, sizeof(chunkNumber), 0);
-	send(masterSock, &activePorts[primary], sizeof(int), 0);
-
-	send(masterSock, fileID.c_str(), fileID.size() + 1, 0);
-	send(masterSock, &chunkNumber, sizeof(chunkNumber), 0);
-	send(masterSock, &activePorts[secondary], sizeof(int), 0);
-
-        cout << "Sent Chunk " << chunkNumber
-     << " to Servers " << activePorts[primary]
-     << " and " << activePorts[secondary] << endl;
+        if (!primarySuccess && !secondarySuccess) {
+            cout << "  [Error] Chunk " << chunkNumber << " failed on ALL replica servers! Reliable retrieval for this chunk will not be possible.\n";
+        }
 
         chunkNumber++;
-        serverIndex = (serverIndex + 1) % sockets.size();
+        serverIndex = (serverIndex + 1) % ports.size();
     }
-
-
-    // remaining bytes
-    if (file.gcount() > 0) {
-	int primary = serverIndex;
-        int secondary = (serverIndex + 1) % sockets.size();
-        int dataSize = file.gcount();
-
-	// primary
-	send(sockets[primary], fileID.c_str(), fileID.size() + 1, 0);
-	send(sockets[primary], &chunkNumber, sizeof(chunkNumber), 0);
-	send(sockets[primary], &dataSize, sizeof(dataSize), 0);
-	send(sockets[primary], buffer, dataSize, 0);
-
-	// secondary
-	send(sockets[secondary], fileID.c_str(), fileID.size() + 1, 0);
-	send(sockets[secondary], &chunkNumber, sizeof(chunkNumber), 0);
-	send(sockets[secondary], &dataSize, sizeof(dataSize), 0);
-	send(sockets[secondary], buffer, dataSize, 0);
-
-	// metadata
-	send(masterSock, fileID.c_str(), fileID.size() + 1, 0);
-	send(masterSock, &chunkNumber, sizeof(chunkNumber), 0);
-	send(masterSock, &activePorts[primary], sizeof(int), 0);
-
-	send(masterSock, fileID.c_str(), fileID.size() + 1, 0);
-	send(masterSock, &chunkNumber, sizeof(chunkNumber), 0);
-	send(masterSock, &activePorts[secondary], sizeof(int), 0);
-
-    }
-
-    cout << "File distributed across servers\n";
 
     file.close();
-    
-    for (int sock : sockets) {
-        close(sock);
-    }
-    close(masterSock);
+    CLOSE_SOCKET(masterSock);
+    cleanup_network();
 
+    cout << "Upload process complete. Metadata updated on Master Server.\n";
     return 0;
 }
