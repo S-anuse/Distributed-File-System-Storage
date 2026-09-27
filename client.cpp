@@ -54,22 +54,22 @@ bool uploadChunk(int port, const string& fileID, int chunkNumber, const char* da
 
     // 1. Send Command
     char cmd = 'U';
-    send(sock, &cmd, 1, 0);
+    send_all(sock, &cmd, 1);
 
     // 2. Send File ID (padded to 256 bytes)
     char fileIDBuffer[256];
     memset(fileIDBuffer, 0, sizeof(fileIDBuffer));
     strncpy(fileIDBuffer, fileID.c_str(), sizeof(fileIDBuffer) - 1);
-    send(sock, fileIDBuffer, sizeof(fileIDBuffer), 0);
+    send_all(sock, fileIDBuffer, sizeof(fileIDBuffer));
 
     // 3. Send Chunk Number
-    send(sock, (char*)&chunkNumber, sizeof(chunkNumber), 0);
+    send_all(sock, (char*)&chunkNumber, sizeof(chunkNumber));
 
     // 4. Send Data Size
-    send(sock, (char*)&dataSize, sizeof(dataSize), 0);
+    send_all(sock, (char*)&dataSize, sizeof(dataSize));
 
     // 5. Send Data Payload
-    send(sock, data, dataSize, 0);
+    send_all(sock, data, dataSize);
 
     // 6. Receive status response
     char status = 0;
@@ -87,7 +87,7 @@ void registerMetadata(SOCKET masterSock, const string& fileID, int chunkNumber, 
     packet.chunkNumber = chunkNumber;
     packet.port = port;
 
-    send(masterSock, (char*)&packet, sizeof(UploadPacket), 0);
+    send_all(masterSock, (char*)&packet, sizeof(UploadPacket));
 }
 
 int main() {

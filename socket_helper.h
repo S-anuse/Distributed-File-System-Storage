@@ -77,4 +77,24 @@ struct LockGuard {
     ~LockGuard() { m.unlock(); }
 };
 
+inline bool recv_all(SOCKET s, char* buf, int len) {
+    int total = 0;
+    while (total < len) {
+        int r = recv(s, buf + total, len - total, 0);
+        if (r <= 0) return false;
+        total += r;
+    }
+    return true;
+}
+
+inline bool send_all(SOCKET s, const char* buf, int len) {
+    int total = 0;
+    while (total < len) {
+        int r = send(s, buf + total, len - total, 0);
+        if (r <= 0) return false;
+        total += r;
+    }
+    return true;
+}
+
 #endif // SOCKET_HELPER_H

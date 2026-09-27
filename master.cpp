@@ -33,8 +33,7 @@ THREAD_ROUTINE handleClient(THREAD_ARG arg) {
         // Upload metadata
         while (true) {
             UploadPacket packet;
-            int r = recv(client_sock, (char*)&packet, sizeof(UploadPacket), 0);
-            if (r <= 0) break;
+            if (!recv_all(client_sock, (char*)&packet, sizeof(UploadPacket))) break;
 
             LockGuard lock(metadataMutex);
             string fId(packet.fileID);
@@ -59,8 +58,7 @@ THREAD_ROUTINE handleClient(THREAD_ARG arg) {
         // Query metadata
         char fileID[256];
         memset(fileID, 0, sizeof(fileID));
-        int r = recv(client_sock, fileID, sizeof(fileID), 0);
-        if (r > 0) {
+        if (recv_all(client_sock, fileID, sizeof(fileID))) {
             string fId(fileID);
             int numChunks = 0;
             
@@ -72,22 +70,22 @@ THREAD_ROUTINE handleClient(THREAD_ARG arg) {
                 }
                 
                 // Send number of chunks
-                send(client_sock, (char*)&numChunks, sizeof(numChunks), 0);
+                send_all(client_sock, (char*)&numChunks, sizeof(numChunks));
                 
                 // For each chunk, send available ports
                 for (int c = 0; c < numChunks; ++c) {
                     vector<int> ports = it->second[c];
                     int numReplicas = ports.size();
-                    send(client_sock, (char*)&numReplicas, sizeof(numReplicas), 0);
+                    send_all(client_sock, (char*)&numReplicas, sizeof(numReplicas));
                     if (numReplicas > 0) {
-                        send(client_sock, (char*)ports.data(), numReplicas * sizeof(int), 0);
+                        send_all(client_sock, (char*)ports.data(), numReplicas * sizeof(int));
                     }
                 }
                 cout << "[Master] Query served for File ID: " << fId 
                      << " (Total Chunks: " << numChunks << ")" << endl;
             } else {
                 // File not found
-                send(client_sock, (char*)&numChunks, sizeof(numChunks), 0);
+                send_all(client_sock, (char*)&numChunks, sizeof(numChunks));
                 cout << "[Master] Query for non-existent File ID: " << fId << endl;
             }
         }

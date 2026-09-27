@@ -7,16 +7,7 @@
 
 using namespace std;
 
-// Helper function to read exact number of bytes
-bool recv_all(SOCKET s, char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int r = recv(s, buf + total, len - total, 0);
-        if (r <= 0) return false;
-        total += r;
-    }
-    return true;
-}
+
 
 SOCKET connectToPort(int port) {
     SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);

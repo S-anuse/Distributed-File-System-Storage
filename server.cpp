@@ -13,16 +13,7 @@ struct ClientArg {
     int server_port;
 };
 
-// Helper function to read exact number of bytes
-bool recv_all(SOCKET s, char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int r = recv(s, buf + total, len - total, 0);
-        if (r <= 0) return false;
-        total += r;
-    }
-    return true;
-}
+
 
 THREAD_ROUTINE handleClient(THREAD_ARG arg) {
     ClientArg* c_arg = (ClientArg*)arg;
